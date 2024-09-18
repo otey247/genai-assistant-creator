@@ -48,6 +48,52 @@ def initialize_client(api_type):
         st.error(f"Error initializing OpenAI client: {str(e)}")
         return None
 
+def how_to_use():
+    st.sidebar.header("How to Use")
+    st.sidebar.markdown("""
+    1. **Configure API Settings**:
+       - Select API type (OpenAI or Azure)
+       - Enter your API key and other required details
+       - Click 'Save Configuration'
+
+    2. **Create an Assistant**:
+       - Go to 'Assistant Management'
+       - Fill in the assistant details
+       - Choose tools (Code Interpreter, File Search)
+       - Click 'Create Assistant'
+
+    3. **Update an Assistant**:
+       - Select an existing assistant
+       - Edit instructions or model as needed
+       - Click 'Update Assistant'
+
+    4. **Use Vector Store** (if needed):
+       - Expand the 'Vector Store Management' section
+       - Create a vector store and upload files
+       - Update your assistant to use the vector store
+
+    5. **Start Chatting**:
+       - Select an assistant
+       - Click 'Start New Chat'
+       - Type your message and interact with the assistant
+
+    Remember to update your assistant if you change the vector store or need to modify its behavior.
+    """)
+    
+def format_message(message):
+    if isinstance(message, dict):
+        content = message.get("content", "")
+        role = message.get("role", "")
+    elif isinstance(message, str):
+        content = message
+        role = "assistant"  # Assuming it's an assistant message if it's a string
+    else:
+        content = str(message)
+        role = "unknown"
+    
+    formatted_content = render_markdown(content)
+    return f'<div class="message {role}">{formatted_content}</div>'
+
 # Function to create a new assistant
 def create_assistant(name, instructions, model, tools):
     try:
@@ -223,9 +269,14 @@ def format_message(message):
     formatted_content = render_markdown(message["content"])
     return f'<div class="message {message["role"]}">{formatted_content}</div>'
 
+
 # Main app layout
 def main():
     st.title("Generative AI Assistant Creator")
+    
+    # Initialize session state for active assistant if not exists
+    if 'active_assistant' not in st.session_state:
+        st.session_state.active_assistant = None
 
     # Sidebar for configuration
     st.sidebar.header("Configuration")
@@ -239,8 +290,31 @@ def main():
         else:
             st.sidebar.error("Failed to initialize client. Please check your .env file and API keys.")
 
+    # How to Use guide in sidebar
+    how_to_use()
+    
     # Main content area
     if st.session_state.client:
+        # Vector Store Management (in expandable section)
+        with st.expander("Vector Store Management"):
+            st.header("Vector Store Management")
+            vector_store_name = st.text_input("Vector Store Name")
+            if st.button("Create Vector Store"):
+                vector_store = create_vector_store(vector_store_name)
+                if vector_store:
+                    st.session_state.vector_store = vector_store
+                    st.success(f"Vector Store '{vector_store_name}' created successfully!")
+
+            if st.session_state.vector_store:
+                st.write(f"Current Vector Store: {st.session_state.vector_store.name}")
+                uploaded_files = st.file_uploader("Upload files to Vector Store", accept_multiple_files=True)
+                if uploaded_files and st.button("Upload Files"):
+                    file_batch = upload_files_to_vector_store(st.session_state.vector_store.id, uploaded_files)
+                    if file_batch:
+                        st.success("Files uploaded successfully!")
+                        st.write(f"File batch status: {file_batch.status}")
+                        st.write(f"File counts: {file_batch.file_counts}")
+
         # Assistant management
         st.header("Assistant Management")
         col1, col2 = st.columns(2)
@@ -260,218 +334,106 @@ def main():
                 if use_file_search:
                     tools.append({"type": "file_search"})
                 
-                new_assistant = create_assistant(new_assistant_name, new_assistant_instructions, new_assistant_model, tools)
+                vector_store_id = st.session_state.vector_store.id if st.session_state.vector_store else None
+                new_assistant = create_assistant(new_assistant_name, new_assistant_instructions, new_assistant_model, tools, vector_store_id)
                 if new_assistant:
-                    st.session_state.assistant = new_assistant
                     st.success(f"Assistant '{new_assistant_name}' created successfully!")
                     st.write(f"Assistant tools: {new_assistant.tools}")
                     st.write(f"Assistant tool_resources: {new_assistant.tool_resources}")
+                    # Set the newly created assistant as the active assistant
+                    st.session_state.active_assistant = new_assistant
+                    st.success(f"'{new_assistant_name}' is now the active assistant for chat.")
 
         with col2:
             st.subheader("Select and Update Assistant")
             assistants = list_assistants()
             assistant_names = [assistant.name for assistant in assistants]
-            selected_assistant = st.selectbox("Choose an Assistant", [""] + assistant_names)
-            
+            selected_assistant = st.selectbox("Choose an Assistant", assistant_names)
             if selected_assistant:
-                st.session_state.assistant = next((a for a in assistants if a.name == selected_assistant), None)
-                if st.session_state.assistant:
-                    st.write(f"Selected Assistant: {st.session_state.assistant.name}")
-                    st.write(f"Assistant tools: {st.session_state.assistant.tools}")
-                    st.write(f"Assistant tool_resources: {st.session_state.assistant.tool_resources}")
+                selected_assistant_obj = next((a for a in assistants if a.name == selected_assistant), None)
+                st.session_state.assistant = selected_assistant_obj
+                st.write(f"Selected Assistant: {st.session_state.assistant.name}")
+                st.write(f"Assistant tools: {st.session_state.assistant.tools}")
+                st.write(f"Assistant tool_resources: {st.session_state.assistant.tool_resources}")
 
-                    # Display and edit assistant instructions
-                    st.subheader("Update Assistant Details")
-                    current_instructions = st.session_state.assistant.instructions
-                    new_instructions = st.text_area("Edit Instructions", value=current_instructions, height=150)
-                    
-                    # Display and edit model (deployment name)
-                    current_model = st.session_state.assistant.model
-                    new_model = st.text_input("Edit Model (Deployment Name for Azure)", value=current_model)
-                    
-                    # Update assistant button
-                    if st.button("Load/Update Assistant"):
-                        updated_assistant = update_assistant(
-                            st.session_state.assistant.id,
-                            instructions=new_instructions,
-                            model=new_model
-                        )
-                        if updated_assistant:
-                            st.session_state.assistant = updated_assistant
-                            st.success("Assistant updated successfully!")
-                            st.write(f"Updated Assistant Instructions: {updated_assistant.instructions}")
-                            st.write(f"Updated Assistant Model: {updated_assistant.model}")
-                            st.rerun()
+                # Set the selected assistant as the active assistant
+                st.session_state.active_assistant = selected_assistant_obj
+                st.success(f"'{selected_assistant}' is now the active assistant for chat.")
 
-        # Vector Store Management (only if an assistant is selected)
-        if st.session_state.assistant:
-            st.header("Vector Store Management")
-            
-            # Check if the assistant has a vector store in tool_resources
-            current_vector_store_id = None
-            if (st.session_state.assistant.tool_resources and 
-                st.session_state.assistant.tool_resources.file_search and 
-                st.session_state.assistant.tool_resources.file_search.vector_store_ids):
-                current_vector_store_id = st.session_state.assistant.tool_resources.file_search.vector_store_ids[0]
-
-            if current_vector_store_id:
-                st.write(f"Current Vector Store ID: {current_vector_store_id}")
-                try:
-                    vector_store = st.session_state.client.beta.vector_stores.retrieve(current_vector_store_id)
-                    st.write(f"Vector Store Name: {vector_store.name}")
-                    
-                    # Fetch and display file count
-                    files = st.session_state.client.beta.vector_stores.files.list(current_vector_store_id)
-                    st.write(f"File Count: {len(files.data)}")
-                    
-                    # Display file names in an expandable section
-                    with st.expander("View Files in Vector Store"):
-                        for file in files.data:
-                            file_details = st.session_state.client.files.retrieve(file.id)
-                            st.write(f"- {file_details.filename} (ID: {file.id})")
-                    
-                    # Option to change the vector store
-                    st.subheader("Change Vector Store")
-                    vector_stores = list_vector_stores()
-                    vector_store_names = [vs.name for vs in vector_stores if vs.id != current_vector_store_id]
-                    new_vector_store = st.selectbox("Select a new Vector Store", [""] + vector_store_names)
-                    
-                    if new_vector_store and st.button("Change Vector Store"):
-                        selected_vs = next((vs for vs in vector_stores if vs.name == new_vector_store), None)
-                        if selected_vs:
-                            updated_assistant = update_assistant(
-                                st.session_state.assistant.id,
-                                vector_store_id=selected_vs.id
-                            )
-                            if updated_assistant:
-                                st.session_state.assistant = updated_assistant
-                                st.success(f"Assistant updated with new Vector Store: {new_vector_store}")
-                                st.rerun()
-                except Exception as e:
-                    st.error(f"Error retrieving vector store details: {str(e)}")
-            else:
-                st.write("No Vector Store associated with this assistant.")
-
-            # Option to create a new vector store
-            st.subheader("Create New Vector Store")
-            new_vector_store_name = st.text_input("New Vector Store Name")
-            if st.button("Create New Vector Store"):
-                new_vector_store = create_vector_store(new_vector_store_name)
-                if new_vector_store:
-                    st.success(f"Vector Store '{new_vector_store_name}' created successfully!")
-                    # Update the assistant with the new vector store
+                st.subheader("Update Assistant Details")
+                current_instructions = st.session_state.assistant.instructions
+                new_instructions = st.text_area("Edit Instructions", value=current_instructions, height=150)
+                
+                current_model = st.session_state.assistant.model
+                new_model = st.text_input("Edit Model (Deployment Name for Azure)", value=current_model)
+                
+                if st.button("Update Assistant"):
                     updated_assistant = update_assistant(
                         st.session_state.assistant.id,
-                        vector_store_id=new_vector_store.id
+                        instructions=new_instructions,
+                        model=new_model,
+                        vector_store_id=st.session_state.vector_store.id if st.session_state.vector_store else None
                     )
                     if updated_assistant:
                         st.session_state.assistant = updated_assistant
-                        st.success("Assistant updated with new Vector Store.")
+                        st.session_state.active_assistant = updated_assistant
+                        st.success("Assistant updated successfully!")
+                        st.write(f"Updated Assistant Instructions: {updated_assistant.instructions}")
+                        st.write(f"Updated Assistant Model: {updated_assistant.model}")
+                        st.write(f"Updated Assistant tool_resources: {updated_assistant.tool_resources}")
                         st.rerun()
-
-            # File upload for vector store
-            st.subheader("Upload Files to Vector Store")
-            uploaded_files = st.file_uploader("Select files to upload", accept_multiple_files=True)
-            if uploaded_files and st.button("Upload Files"):
-                if current_vector_store_id:
-                    file_batch = upload_files_to_vector_store(current_vector_store_id, uploaded_files)
-                    if file_batch:
-                        st.success("Files uploaded successfully!")
-                        st.write(f"File batch status: {file_batch.status}")
-                        st.write(f"File counts: {file_batch.file_counts}")
-                        st.rerun()
-                else:
-                    st.error("Please create or select a Vector Store first.")
 
         # Chat interface
         st.header("Chat Interface")
-        if st.session_state.assistant:
+        if st.session_state.active_assistant:
+            st.info(f"Active Assistant: {st.session_state.active_assistant.name}")
+            
             if st.button("Start New Chat"):
                 st.session_state.thread = create_thread()
                 st.session_state.messages = []
 
             if st.session_state.thread:
                 # Display chat messages
-                chat_container = st.container()
-                with chat_container:
-                    for message in st.session_state.messages:
-                        st.markdown(format_message(message), unsafe_allow_html=True)
-
-                # File upload for message attachment
-                uploaded_files = st.file_uploader("Upload files for message", accept_multiple_files=True)
+                for message in st.session_state.messages:
+                    with st.chat_message(message["role"]):
+                        if message["role"] == "assistant":
+                            st.markdown(format_message(message), unsafe_allow_html=True)
+                        else:
+                            st.write(message["content"])
 
                 # Chat input
                 user_input = st.chat_input("Type your message here...")
                 if user_input:
-                    # Upload files if any
-                    file_ids = None
-                    if uploaded_files:
-                        file_ids = upload_files_for_message(uploaded_files)
-
                     # Add user message to thread and display it
-                    message = add_message_to_thread(st.session_state.thread.id, user_input, file_ids)
-                    if message:
-                        st.session_state.messages.append({"role": "user", "content": user_input})
-                        with chat_container:
-                            st.markdown(format_message({"role": "user", "content": user_input}), unsafe_allow_html=True)
+                    add_message_to_thread(st.session_state.thread.id, user_input)
+                    st.session_state.messages.append({"role": "user", "content": user_input})
+                    with st.chat_message("user"):
+                        st.write(user_input)
 
-                        # Run the assistant
-                        with st.spinner("Assistant is thinking..."):
-                            run = run_assistant(st.session_state.thread.id, st.session_state.assistant.id)
-                            if run:
-                                # Wait for the run to complete
-                                status = get_run_status(st.session_state.thread.id, run.id)
-                                while status not in ["completed", "failed"]:
-                                    time.sleep(1)
-                                    status = get_run_status(st.session_state.thread.id, run.id)
+                    # Run the active assistant
+                    run = run_assistant(st.session_state.thread.id, st.session_state.active_assistant.id)
+                    if run:
+                        # Wait for the run to complete
+                        status = get_run_status(st.session_state.thread.id, run.id)
+                        while status not in ["completed", "failed"]:
+                            time.sleep(1)
+                            status = get_run_status(st.session_state.thread.id, run.id)
 
-                                # Get the assistant's response
-                                messages = get_messages(st.session_state.thread.id)
-                                if messages:
-                                    assistant_message = messages[0].content[0].text.value
-                                    st.session_state.messages.append({"role": "assistant", "content": assistant_message})
-                                    with chat_container:
-                                        st.markdown(format_message({"role": "assistant", "content": assistant_message}), unsafe_allow_html=True)
-
-                        # Scroll to the bottom of the chat
-                        st.markdown('<script>window.scrollTo(0,document.body.scrollHeight);</script>', unsafe_allow_html=True)
-                        
+                        # Get the assistant's response
+                        messages = get_messages(st.session_state.thread.id)
+                        if messages:
+                            assistant_message = messages[0].content[0].text.value
+                            st.session_state.messages.append({"role": "assistant", "content": assistant_message})
+                            with st.chat_message("assistant"):
+                                st.markdown(format_message({"role": "assistant", "content": assistant_message}), unsafe_allow_html=True)
 
             else:
                 st.warning("Please start a new chat to begin the conversation.")
         else:
             st.warning("Please select or create an assistant to start chatting.")
-
-    # Add custom CSS for message formatting
-    st.markdown("""
-    <style>
-    .message {
-        padding: 10px;
-        margin: 5px 0;
-        border-radius: 5px;
-        border: 1px solid rgba(128, 128, 128, 0.3);
-    }
-    .user {
-        background-color: rgba(240, 240, 240, 0.1);
-        text-align: right;
-    }
-    .assistant {
-        background-color: rgba(230, 243, 255, 0.1);
-    }
-    .codehilite {
-        background-color: rgba(248, 248, 248, 0.1);
-        border: 1px solid rgba(204, 204, 204, 0.3);
-        border-radius: 3px;
-        padding: 10px;
-        margin: 10px 0;
-        overflow-x: auto;
-    }
-    /* Ensure text is visible in both light and dark modes */
-    .message, .codehilite {
-        color: var(--text-color);
-    }
-    </style>
-    """, unsafe_allow_html=True)
+    else:
+        st.warning("Please configure your API settings in the sidebar to get started.")
 
 if __name__ == "__main__":
     main()
+   
